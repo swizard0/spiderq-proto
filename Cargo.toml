@@ -1,0 +1,8 @@
+[package]
+name = "spiderq-proto"
+version = "1.0.0"
+authors = ["Alexey Voznyuk <me@swizard.info>"]
+
+[dependencies]
+byteorder = "*"
+
