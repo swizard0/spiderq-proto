@@ -1,3 +1,6 @@
+#![feature(slice_bytes)]
+extern crate byteorder;
+
 use std::sync::Arc;
 use std::mem::size_of;
 use std::slice::bytes;
