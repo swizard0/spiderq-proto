@@ -1,5 +1,5 @@
 [package]
-name = "spiderq-proto"
+name = "spiderq_proto"
 version = "1.0.0"
 authors = ["Alexey Voznyuk <me@swizard.info>"]
 
