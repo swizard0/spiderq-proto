@@ -23,8 +23,8 @@ pub enum GlobalReq {
     Add(Key, Value),
     Update(Key, Value),
     Lend { timeout: u64, },
-    Repay(Key, Value, RepayStatus),
-    Heartbeat { key: Key, timeout: u64, },
+    Repay { lend_key: u64, key: Key, value: Value, status: RepayStatus, },
+    Heartbeat { lend_key: u64, key: Key, timeout: u64, },
     Stats,
     Terminate,
 }
@@ -36,7 +36,7 @@ pub enum GlobalRep {
     Kept,
     Updated,
     NotFound,
-    Lent(Key, Value),
+    Lent { lend_key: u64, key: Key, value: Value, },
     Repaid,
     Heartbeaten,
     Skipped,
@@ -54,6 +54,7 @@ pub enum ProtoError {
     NotEnoughDataForGlobalReqAddValueLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqAddValue { required: usize, given: usize, },
     NotEnoughDataForGlobalReqLendTimeout { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqRepayLendKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqRepayKeyLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqRepayKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqRepayValueLen { required: usize, given: usize, },
@@ -63,6 +64,7 @@ pub enum ProtoError {
     NotEnoughDataForGlobalRepTag { required: usize, given: usize, },
     InvalidGlobalRepTag(u8),
     NotEnoughDataForGlobalRepCountCount { required: usize, given: usize, },
+    NotEnoughDataForGlobalRepLentLendKey { required: usize, given: usize, },
     NotEnoughDataForGlobalRepLentKeyLen { required: usize, given: usize, },
     NotEnoughDataForGlobalRepLentKey { required: usize, given: usize, },
     NotEnoughDataForGlobalRepLentValueLen { required: usize, given: usize, },
@@ -86,6 +88,7 @@ pub enum ProtoError {
     NotEnoughDataForGlobalReqUpdateKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqUpdateValueLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqUpdateValue { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqHeartbeatLendKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqHeartbeatKeyLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqHeartbeatKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqHeartbeatTimeout { required: usize, given: usize, },
@@ -167,6 +170,7 @@ impl GlobalReq {
                 Ok((GlobalReq::Lend { timeout: timeout, }, buf))
             },
             (5, buf) => {
+                let (lend_key, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalReqRepayLendKey);
                 let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqRepayKeyLen, NotEnoughDataForGlobalReqRepayKey);
                 let (value, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqRepayValueLen, NotEnoughDataForGlobalReqRepayValue);
                 let (status, buf) = match try_get!(buf, u8, read_u8, NotEnoughDataForGlobalReqRepayRepayStatus) {
@@ -176,12 +180,13 @@ impl GlobalReq {
                     (4, buf) => (RepayStatus::Drop, buf),
                     (status_tag, _) => return Err(ProtoError::InvalidGlobalReqRepayRepayStatusTag(status_tag)),
                 };
-                Ok((GlobalReq::Repay(key, value, status), buf))
+                Ok((GlobalReq::Repay { lend_key: lend_key, key: key, value: value, status: status, }, buf))
             },
             (6, buf) => {
+                let (lend_key, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalReqHeartbeatLendKey);
                 let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqHeartbeatKeyLen, NotEnoughDataForGlobalReqHeartbeatKey);
                 let (timeout, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalReqHeartbeatTimeout);
-                Ok((GlobalReq::Heartbeat { key: key, timeout: timeout, }, buf))
+                Ok((GlobalReq::Heartbeat { lend_key: lend_key, key: key, timeout: timeout, }, buf))
             },
             (7, buf) =>
                 Ok((GlobalReq::Stats, buf)),
@@ -198,8 +203,9 @@ impl GlobalReq {
             &GlobalReq::Add(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Update(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Lend { .. } => size_of::<u64>(),
-            &GlobalReq::Repay(ref key, ref value, _) => size_of::<u32>() * 2 + key.len() + value.len() + size_of::<u8>(),
-            &GlobalReq::Heartbeat { key: ref k, .. } => size_of::<u32>() + k.len() + size_of::<u64>(),
+            &GlobalReq::Repay { key: ref rkey, value: ref rvalue, .. } =>
+                size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len() + size_of::<u8>(),
+            &GlobalReq::Heartbeat { key: ref k, .. } => size_of::<u64>() + size_of::<u32>() + k.len() + size_of::<u64>(),
         }
     }
 
@@ -223,19 +229,21 @@ impl GlobalReq {
                 let area = put_adv!(area, u8, write_u8, 4);
                 put_adv!(area, u64, write_u64, t)
             },
-            &GlobalReq::Repay(ref key, ref value, ref status) => {
+            &GlobalReq::Repay { lend_key: rlend_key, key: ref rkey, value: ref rvalue, status: ref rstatus } => {
                 let area = put_adv!(area, u8, write_u8, 5);
-                let area = put_vec_adv!(area, key);
-                let area = put_vec_adv!(area, value);
-                put_adv!(area, u8, write_u8, match status {
+                let area = put_adv!(area, u64, write_u64, rlend_key);
+                let area = put_vec_adv!(area, rkey);
+                let area = put_vec_adv!(area, rvalue);
+                put_adv!(area, u8, write_u8, match rstatus {
                     &RepayStatus::Penalty => 1,
                     &RepayStatus::Reward => 2,
                     &RepayStatus::Front => 3,
                     &RepayStatus::Drop => 4,
                 })
             },
-            &GlobalReq::Heartbeat { key: ref k, timeout: t, } => {
+            &GlobalReq::Heartbeat { lend_key: l, key: ref k, timeout: t, } => {
                 let area = put_adv!(area, u8, write_u8, 6);
+                let area = put_adv!(area, u64, write_u64, l);
                 let area = put_vec_adv!(area, k);
                 put_adv!(area, u64, write_u64, t)
             },
@@ -263,9 +271,10 @@ impl GlobalRep {
             (5, buf) =>
                 Ok((GlobalRep::NotFound, buf)),
             (6, buf) => {
+                let (lend_key, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepLentLendKey);
                 let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalRepLentKeyLen, NotEnoughDataForGlobalRepLentKey);
                 let (value, buf) = try_get_vec!(buf, NotEnoughDataForGlobalRepLentValueLen, NotEnoughDataForGlobalRepLentValue);
-                Ok((GlobalRep::Lent(key, value), buf))
+                Ok((GlobalRep::Lent { lend_key: lend_key, key: key, value: value, }, buf))
             },
             (7, buf) =>
                 Ok((GlobalRep::Repaid, buf)),
@@ -311,7 +320,7 @@ impl GlobalRep {
             &GlobalRep::Heartbeaten |
             &GlobalRep::Skipped |
             &GlobalRep::Terminated => 0,
-            &GlobalRep::Lent(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
+            &GlobalRep::Lent { key: ref rkey, value: ref rvalue, .. } => size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len(),
             &GlobalRep::StatsGot { .. } => size_of::<u64>() * 7,
             &GlobalRep::Error(ref err) => err.encode_len(),
         }
@@ -331,10 +340,11 @@ impl GlobalRep {
                 put_adv!(area, u8, write_u8, 4),
             &GlobalRep::NotFound =>
                 put_adv!(area, u8, write_u8, 5),
-            &GlobalRep::Lent(ref key, ref value) => {
+            &GlobalRep::Lent { lend_key: rlend_key, key: ref rkey, value: ref rvalue, } => {
                 let area = put_adv!(area, u8, write_u8, 6);
-                let area = put_vec_adv!(area, key);
-                let area = put_vec_adv!(area, value);
+                let area = put_adv!(area, u64, write_u64, rlend_key);
+                let area = put_vec_adv!(area, rkey);
+                let area = put_vec_adv!(area, rvalue);
                 area
             },
             &GlobalRep::Repaid =>
@@ -410,45 +420,48 @@ impl ProtoError {
             (5, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqAddValueLen),
             (6, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqAddValue),
             (7, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqLendTimeout),
-            (8, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayKeyLen),
-            (9, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayKey),
-            (10, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayValueLen),
-            (11, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayValue),
-            (12, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayRepayStatus),
-            (13, buf) => decode_tag!(buf, InvalidGlobalReqRepayRepayStatusTag),
-            (14, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepTag),
-            (15, buf) => decode_tag!(buf, InvalidGlobalRepTag),
-            (16, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepCountCount),
-            (17, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentKeyLen),
-            (18, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentKey),
-            (19, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentValueLen),
-            (20, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentValue),
-            (21, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsCount),
-            (22, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsAdd),
-            (23, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsUpdate),
-            (24, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsLend),
-            (25, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsRepay),
-            (26, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsHeartbeat),
-            (27, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsStats),
-            (28, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorTag),
-            (29, buf) => decode_tag!(buf, InvalidProtoErrorTag),
-            (30, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorRequired),
-            (31, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorGiven),
-            (32, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorInvalidTag),
-            (33, buf) => {
+            (8, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayLendKey),
+            (9, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayKeyLen),
+            (10, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayKey),
+            (11, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayValueLen),
+            (12, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayValue),
+            (13, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRepayRepayStatus),
+            (14, buf) => decode_tag!(buf, InvalidGlobalReqRepayRepayStatusTag),
+            (15, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepTag),
+            (16, buf) => decode_tag!(buf, InvalidGlobalRepTag),
+            (17, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepCountCount),
+            (18, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentLendKey),
+            (19, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentKeyLen),
+            (20, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentKey),
+            (21, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentValueLen),
+            (22, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepLentValue),
+            (23, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsCount),
+            (24, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsAdd),
+            (25, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsUpdate),
+            (26, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsLend),
+            (27, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsRepay),
+            (28, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsHeartbeat),
+            (29, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsStats),
+            (30, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorTag),
+            (31, buf) => decode_tag!(buf, InvalidProtoErrorTag),
+            (32, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorRequired),
+            (33, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorGiven),
+            (34, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorInvalidTag),
+            (35, buf) => {
                 let (key, buf) =
                     try_get_vec!(buf, NotEnoughDataForProtoErrorDbQueueOutOfSyncKeyLen, NotEnoughDataForProtoErrorDbQueueOutOfSyncKey);
                 Ok((ProtoError::DbQueueOutOfSync(key), buf))
             },
-            (34, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorDbQueueOutOfSyncKeyLen),
-            (35, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorDbQueueOutOfSyncKey),
-            (36, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateKeyLen),
-            (37, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateKey),
-            (38, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateValueLen),
-            (39, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateValue),
-            (40, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatKeyLen),
-            (41, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatKey),
-            (42, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatTimeout),
+            (36, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorDbQueueOutOfSyncKeyLen),
+            (37, buf) => decode_not_enough!(buf, NotEnoughDataForProtoErrorDbQueueOutOfSyncKey),
+            (38, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateKeyLen),
+            (39, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateKey),
+            (40, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateValueLen),
+            (41, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqUpdateValue),
+            (42, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatLendKey),
+            (43, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatKeyLen),
+            (44, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatKey),
+            (45, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatTimeout),
             (tag, _) => return Err(ProtoError::InvalidProtoErrorTag(tag)),
         }
     }
@@ -461,6 +474,7 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqAddValueLen { .. } |
             &ProtoError::NotEnoughDataForGlobalReqAddValue { .. } |
             &ProtoError::NotEnoughDataForGlobalReqLendTimeout { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqRepayLendKey { .. } |
             &ProtoError::NotEnoughDataForGlobalReqRepayKeyLen { .. } |
             &ProtoError::NotEnoughDataForGlobalReqRepayKey { .. } |
             &ProtoError::NotEnoughDataForGlobalReqRepayValueLen { .. } |
@@ -468,6 +482,7 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqRepayRepayStatus { .. } |
             &ProtoError::NotEnoughDataForGlobalRepTag { .. } |
             &ProtoError::NotEnoughDataForGlobalRepCountCount { .. } |
+            &ProtoError::NotEnoughDataForGlobalRepLentLendKey { .. } |
             &ProtoError::NotEnoughDataForGlobalRepLentKeyLen { .. } |
             &ProtoError::NotEnoughDataForGlobalRepLentKey { .. } |
             &ProtoError::NotEnoughDataForGlobalRepLentValueLen { .. } |
@@ -489,6 +504,7 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqUpdateKey { .. } |
             &ProtoError::NotEnoughDataForGlobalReqUpdateValueLen { .. } |
             &ProtoError::NotEnoughDataForGlobalReqUpdateValue { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqHeartbeatLendKey { .. } |
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatKeyLen { .. } |
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatKey { .. } |
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { .. } =>
@@ -512,45 +528,48 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqAddValueLen { required: r, given: g, } => encode_not_enough!(area, 5, r, g),
             &ProtoError::NotEnoughDataForGlobalReqAddValue { required: r, given: g, } => encode_not_enough!(area, 6, r, g),
             &ProtoError::NotEnoughDataForGlobalReqLendTimeout { required: r, given: g, } => encode_not_enough!(area, 7, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqRepayKeyLen { required: r, given: g, } => encode_not_enough!(area, 8, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqRepayKey { required: r, given: g, } => encode_not_enough!(area, 9, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqRepayValueLen { required: r, given: g, } => encode_not_enough!(area, 10, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqRepayValue { required: r, given: g, } => encode_not_enough!(area, 11, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqRepayRepayStatus { required: r, given: g, } => encode_not_enough!(area, 12, r, g),
-            &ProtoError::InvalidGlobalReqRepayRepayStatusTag(tag) => encode_tag!(area, 13, tag),
-            &ProtoError::NotEnoughDataForGlobalRepTag { required: r, given: g, } => encode_not_enough!(area, 14, r, g),
-            &ProtoError::InvalidGlobalRepTag(tag) => encode_tag!(area, 15, tag),
-            &ProtoError::NotEnoughDataForGlobalRepCountCount { required: r, given: g, } => encode_not_enough!(area, 16, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepLentKeyLen { required: r, given: g, } => encode_not_enough!(area, 17, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepLentKey { required: r, given: g, } => encode_not_enough!(area, 18, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepLentValueLen { required: r, given: g, } => encode_not_enough!(area, 19, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepLentValue { required: r, given: g, } => encode_not_enough!(area, 20, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepStatsCount { required: r, given: g, } => encode_not_enough!(area, 21, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepStatsAdd { required: r, given: g, } => encode_not_enough!(area, 22, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepStatsUpdate { required: r, given: g, } => encode_not_enough!(area, 23, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepStatsLend { required: r, given: g, } => encode_not_enough!(area, 24, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepStatsRepay { required: r, given: g, } => encode_not_enough!(area, 25, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepStatsHeartbeat { required: r, given: g, } => encode_not_enough!(area, 26, r, g),
-            &ProtoError::NotEnoughDataForGlobalRepStatsStats { required: r, given: g, } => encode_not_enough!(area, 27, r, g),
-            &ProtoError::NotEnoughDataForProtoErrorTag { required: r, given: g, } => encode_not_enough!(area, 28, r, g),
-            &ProtoError::InvalidProtoErrorTag(tag) => encode_tag!(area, 29, tag),
-            &ProtoError::NotEnoughDataForProtoErrorRequired { required: r, given: g, } => encode_not_enough!(area, 30, r, g),
-            &ProtoError::NotEnoughDataForProtoErrorGiven { required: r, given: g, } => encode_not_enough!(area, 31, r, g),
-            &ProtoError::NotEnoughDataForProtoErrorInvalidTag { required: r, given: g, } => encode_not_enough!(area, 32, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRepayLendKey { required: r, given: g, } => encode_not_enough!(area, 8, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRepayKeyLen { required: r, given: g, } => encode_not_enough!(area, 9, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRepayKey { required: r, given: g, } => encode_not_enough!(area, 10, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRepayValueLen { required: r, given: g, } => encode_not_enough!(area, 11, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRepayValue { required: r, given: g, } => encode_not_enough!(area, 12, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRepayRepayStatus { required: r, given: g, } => encode_not_enough!(area, 13, r, g),
+            &ProtoError::InvalidGlobalReqRepayRepayStatusTag(tag) => encode_tag!(area, 14, tag),
+            &ProtoError::NotEnoughDataForGlobalRepTag { required: r, given: g, } => encode_not_enough!(area, 15, r, g),
+            &ProtoError::InvalidGlobalRepTag(tag) => encode_tag!(area, 16, tag),
+            &ProtoError::NotEnoughDataForGlobalRepCountCount { required: r, given: g, } => encode_not_enough!(area, 17, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepLentLendKey { required: r, given: g, } => encode_not_enough!(area, 18, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepLentKeyLen { required: r, given: g, } => encode_not_enough!(area, 19, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepLentKey { required: r, given: g, } => encode_not_enough!(area, 20, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepLentValueLen { required: r, given: g, } => encode_not_enough!(area, 21, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepLentValue { required: r, given: g, } => encode_not_enough!(area, 22, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsCount { required: r, given: g, } => encode_not_enough!(area, 23, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsAdd { required: r, given: g, } => encode_not_enough!(area, 24, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsUpdate { required: r, given: g, } => encode_not_enough!(area, 25, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsLend { required: r, given: g, } => encode_not_enough!(area, 26, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsRepay { required: r, given: g, } => encode_not_enough!(area, 27, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsHeartbeat { required: r, given: g, } => encode_not_enough!(area, 28, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsStats { required: r, given: g, } => encode_not_enough!(area, 29, r, g),
+            &ProtoError::NotEnoughDataForProtoErrorTag { required: r, given: g, } => encode_not_enough!(area, 30, r, g),
+            &ProtoError::InvalidProtoErrorTag(tag) => encode_tag!(area, 31, tag),
+            &ProtoError::NotEnoughDataForProtoErrorRequired { required: r, given: g, } => encode_not_enough!(area, 32, r, g),
+            &ProtoError::NotEnoughDataForProtoErrorGiven { required: r, given: g, } => encode_not_enough!(area, 33, r, g),
+            &ProtoError::NotEnoughDataForProtoErrorInvalidTag { required: r, given: g, } => encode_not_enough!(area, 34, r, g),
             &ProtoError::DbQueueOutOfSync(ref key) => {
-                let area = put_adv!(area, u8, write_u8, 33);
+                let area = put_adv!(area, u8, write_u8, 35);
                 let area = put_vec_adv!(area, key);
                 area
             },
-            &ProtoError::NotEnoughDataForProtoErrorDbQueueOutOfSyncKeyLen { required: r, given: g, } => encode_not_enough!(area, 34, r, g),
-            &ProtoError::NotEnoughDataForProtoErrorDbQueueOutOfSyncKey { required: r, given: g, } => encode_not_enough!(area, 35, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqUpdateKeyLen { required: r, given: g, } => encode_not_enough!(area, 36, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqUpdateKey { required: r, given: g, } => encode_not_enough!(area, 37, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqUpdateValueLen { required: r, given: g, } => encode_not_enough!(area, 38, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqUpdateValue { required: r, given: g, } => encode_not_enough!(area, 39, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqHeartbeatKeyLen { required: r, given: g, } => encode_not_enough!(area, 40, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqHeartbeatKey { required: r, given: g, } => encode_not_enough!(area, 41, r, g),
-            &ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { required: r, given: g, } => encode_not_enough!(area, 42, r, g),
+            &ProtoError::NotEnoughDataForProtoErrorDbQueueOutOfSyncKeyLen { required: r, given: g, } => encode_not_enough!(area, 36, r, g),
+            &ProtoError::NotEnoughDataForProtoErrorDbQueueOutOfSyncKey { required: r, given: g, } => encode_not_enough!(area, 37, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqUpdateKeyLen { required: r, given: g, } => encode_not_enough!(area, 38, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqUpdateKey { required: r, given: g, } => encode_not_enough!(area, 39, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqUpdateValueLen { required: r, given: g, } => encode_not_enough!(area, 40, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqUpdateValue { required: r, given: g, } => encode_not_enough!(area, 41, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqHeartbeatLendKey { required: r, given: g, } => encode_not_enough!(area, 42, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqHeartbeatKeyLen { required: r, given: g, } => encode_not_enough!(area, 43, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqHeartbeatKey { required: r, given: g, } => encode_not_enough!(area, 44, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { required: r, given: g, } => encode_not_enough!(area, 45, r, g),
         }
     }
 }
@@ -604,31 +623,31 @@ mod test {
     #[test]
     fn globalreq_repay_penalty() {
         let (key, value) = dummy_key_value();
-        assert_encode_decode_req(GlobalReq::Repay(key, value, RepayStatus::Penalty));
+        assert_encode_decode_req(GlobalReq::Repay { lend_key: 177, key: key, value: value, status: RepayStatus::Penalty, });
     }
 
     #[test]
     fn globalreq_repay_reward() {
         let (key, value) = dummy_key_value();
-        assert_encode_decode_req(GlobalReq::Repay(key, value, RepayStatus::Reward));
+        assert_encode_decode_req(GlobalReq::Repay { lend_key: 177, key: key, value: value, status: RepayStatus::Reward, });
     }
 
     #[test]
     fn globalreq_repay_front() {
         let (key, value) = dummy_key_value();
-        assert_encode_decode_req(GlobalReq::Repay(key, value, RepayStatus::Front));
+        assert_encode_decode_req(GlobalReq::Repay { lend_key: 177, key: key, value: value, status: RepayStatus::Front, });
     }
 
     #[test]
     fn globalreq_repay_drop() {
         let (key, value) = dummy_key_value();
-        assert_encode_decode_req(GlobalReq::Repay(key, value, RepayStatus::Drop));
+        assert_encode_decode_req(GlobalReq::Repay { lend_key: 177, key: key, value: value, status: RepayStatus::Drop, });
     }
 
     #[test]
     fn globalreq_heartbeat() {
         let (key, _) = dummy_key_value();
-        assert_encode_decode_req(GlobalReq::Heartbeat { key: key, timeout: 177, });
+        assert_encode_decode_req(GlobalReq::Heartbeat { lend_key: 177, key: key, timeout: 177, });
     }
 
     #[test]
@@ -669,7 +688,7 @@ mod test {
     #[test]
     fn globalrep_lent() {
         let (key, value) = dummy_key_value();
-        assert_encode_decode_rep(GlobalRep::Lent(key, value));
+        assert_encode_decode_rep(GlobalRep::Lent { lend_key: 177, key: key, value: value, });
     }
 
     #[test]
@@ -733,6 +752,11 @@ mod test {
     }
 
     #[test]
+    fn globalrep_error_notenoughdataforglobalreqrepaylendkey() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqRepayLendKey { required: 177, given: 177, }));
+    }
+
+    #[test]
     fn globalrep_error_notenoughdataforglobalreqrepaykeylen() {
         assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqRepayKeyLen { required: 177, given: 177, }));
     }
@@ -775,6 +799,11 @@ mod test {
     #[test]
     fn globalrep_error_notenoughdataforglobalrepcountcount() {
         assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalRepCountCount { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreplentlendkey() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalRepLentLendKey { required: 177, given: 177, }));
     }
 
     #[test]
@@ -891,6 +920,11 @@ mod test {
     #[test]
     fn globalrep_error_notenoughdataforglobalrequpdatevalue() {
         assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqUpdateValue { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreqheartbeatlendkey() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqHeartbeatLendKey { required: 177, given: 177, }));
     }
 
     #[test]
