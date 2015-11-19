@@ -22,10 +22,12 @@ pub enum GlobalReq {
     Count,
     Add(Key, Value),
     Update(Key, Value),
+    Lookup(Key),
     Lend { timeout: u64, },
     Repay { lend_key: u64, key: Key, value: Value, status: RepayStatus, },
     Heartbeat { lend_key: u64, key: Key, timeout: u64, },
     Stats,
+    Flush,
     Terminate,
 }
 
@@ -36,11 +38,14 @@ pub enum GlobalRep {
     Kept,
     Updated,
     NotFound,
+    ValueFound(Value),
+    ValueNotFound,
     Lent { lend_key: u64, key: Key, value: Value, },
     Repaid,
     Heartbeaten,
     Skipped,
     StatsGot { count: usize, add: usize, update: usize, lend: usize, repay: usize, heartbeat: usize, stats: usize, },
+    Flushed,
     Terminated,
     Error(ProtoError),
 }
@@ -92,6 +97,10 @@ pub enum ProtoError {
     NotEnoughDataForGlobalReqHeartbeatKeyLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqHeartbeatKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqHeartbeatTimeout { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqLookupKeyLen { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqLookupKey { required: usize, given: usize, },
+    NotEnoughDataForGlobalRepValueFoundValueLen { required: usize, given: usize, },
+    NotEnoughDataForGlobalRepValueFoundValue { required: usize, given: usize, },
 }
 
 macro_rules! try_get {
@@ -192,6 +201,12 @@ impl GlobalReq {
                 Ok((GlobalReq::Stats, buf)),
             (8, buf) =>
                 Ok((GlobalReq::Terminate, buf)),
+            (9, buf) => {
+                let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqLookupKeyLen, NotEnoughDataForGlobalReqLookupKey);
+                Ok((GlobalReq::Lookup(key), buf))
+            },
+            (10, buf) =>
+                Ok((GlobalReq::Flush, buf)),
             (tag, _) =>
                 return Err(ProtoError::InvalidGlobalReqTag(tag)),
         }
@@ -199,13 +214,14 @@ impl GlobalReq {
 
     pub fn encode_len(&self) -> usize {
         size_of::<u8>() + match self {
-            &GlobalReq::Count | &GlobalReq::Stats | &GlobalReq::Terminate => 0,
+            &GlobalReq::Count | &GlobalReq::Stats | &GlobalReq::Terminate | &GlobalReq::Flush => 0,
             &GlobalReq::Add(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Update(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Lend { .. } => size_of::<u64>(),
             &GlobalReq::Repay { key: ref rkey, value: ref rvalue, .. } =>
                 size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len() + size_of::<u8>(),
             &GlobalReq::Heartbeat { key: ref k, .. } => size_of::<u64>() + size_of::<u32>() + k.len() + size_of::<u64>(),
+            &GlobalReq::Lookup(ref key) => size_of::<u32>() + key.len(),
         }
     }
 
@@ -251,6 +267,13 @@ impl GlobalReq {
                 put_adv!(area, u8, write_u8, 7),
             &GlobalReq::Terminate =>
                 put_adv!(area, u8, write_u8, 8),
+            &GlobalReq::Lookup(ref key) => {
+                let area = put_adv!(area, u8, write_u8, 9);
+                let area = put_vec_adv!(area, key);
+                area
+            },
+            &GlobalReq::Flush =>
+                put_adv!(area, u8, write_u8, 10),
         }
     }
 }
@@ -304,6 +327,14 @@ impl GlobalRep {
             },
             (12, buf) =>
                 Ok((GlobalRep::Terminated, buf)),
+            (13, buf) => {
+                let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalRepValueFoundValueLen, NotEnoughDataForGlobalRepValueFoundValue);
+                Ok((GlobalRep::ValueFound(key), buf))
+            },
+            (14, buf) =>
+                Ok((GlobalRep::ValueNotFound, buf)),
+            (15, buf) =>
+                Ok((GlobalRep::Flushed, buf)),
             (tag, _) =>
                 return Err(ProtoError::InvalidGlobalRepTag(tag)),
         }
@@ -319,10 +350,13 @@ impl GlobalRep {
             &GlobalRep::Repaid |
             &GlobalRep::Heartbeaten |
             &GlobalRep::Skipped |
-            &GlobalRep::Terminated => 0,
+            &GlobalRep::Terminated |
+            &GlobalRep::ValueNotFound |
+            &GlobalRep::Flushed => 0,
             &GlobalRep::Lent { key: ref rkey, value: ref rvalue, .. } => size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len(),
             &GlobalRep::StatsGot { .. } => size_of::<u64>() * 7,
             &GlobalRep::Error(ref err) => err.encode_len(),
+            &GlobalRep::ValueFound(ref value) => size_of::<u32>() + value.len(),
         }
     }
 
@@ -376,6 +410,15 @@ impl GlobalRep {
             },
             &GlobalRep::Terminated =>
                 put_adv!(area, u8, write_u8, 12),
+            &GlobalRep::ValueFound(ref value) => {
+                let area = put_adv!(area, u8, write_u8, 13);
+                let area = put_vec_adv!(area, value);
+                area
+            },
+            &GlobalRep::ValueNotFound =>
+                put_adv!(area, u8, write_u8, 14),
+            &GlobalRep::Flushed =>
+                put_adv!(area, u8, write_u8, 15),
         }
     }
 }
@@ -462,6 +505,10 @@ impl ProtoError {
             (43, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatKeyLen),
             (44, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatKey),
             (45, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqHeartbeatTimeout),
+            (46, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqLookupKeyLen),
+            (47, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqLookupKey),
+            (48, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepValueFoundValueLen),
+            (49, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepValueFoundValue),
             (tag, _) => return Err(ProtoError::InvalidProtoErrorTag(tag)),
         }
     }
@@ -507,7 +554,11 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatLendKey { .. } |
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatKeyLen { .. } |
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatKey { .. } |
-            &ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { .. } =>
+            &ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqLookupKeyLen { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqLookupKey { .. } |
+            &ProtoError::NotEnoughDataForGlobalRepValueFoundValueLen { .. } |
+            &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { .. } =>
                 size_of::<u32>() + size_of::<u32>(),
             &ProtoError::InvalidGlobalRepTag(..) |
             &ProtoError::InvalidGlobalReqTag(..) |
@@ -570,6 +621,10 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatKeyLen { required: r, given: g, } => encode_not_enough!(area, 43, r, g),
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatKey { required: r, given: g, } => encode_not_enough!(area, 44, r, g),
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { required: r, given: g, } => encode_not_enough!(area, 45, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqLookupKeyLen { required: r, given: g, } => encode_not_enough!(area, 46, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqLookupKey { required: r, given: g, } => encode_not_enough!(area, 47, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepValueFoundValueLen { required: r, given: g, } => encode_not_enough!(area, 48, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { required: r, given: g, } => encode_not_enough!(area, 49, r, g),
         }
     }
 }
@@ -613,6 +668,12 @@ mod test {
     fn globalreq_update() {
         let (key, value) = dummy_key_value();
         assert_encode_decode_req(GlobalReq::Update(key, value));
+    }
+
+    #[test]
+    fn globalreq_lookup() {
+        let (key, _) = dummy_key_value();
+        assert_encode_decode_req(GlobalReq::Lookup(key));
     }
 
     #[test]
@@ -686,6 +747,17 @@ mod test {
     }
 
     #[test]
+    fn globalrep_valuefound() {
+        let (_, value) = dummy_key_value();
+        assert_encode_decode_rep(GlobalRep::ValueFound(value));
+    }
+
+    #[test]
+    fn globalrep_valuenotfound() {
+        assert_encode_decode_rep(GlobalRep::ValueNotFound);
+    }
+
+    #[test]
     fn globalrep_lent() {
         let (key, value) = dummy_key_value();
         assert_encode_decode_rep(GlobalRep::Lent { lend_key: 177, key: key, value: value, });
@@ -709,6 +781,11 @@ mod test {
     #[test]
     fn globalrep_stats() {
         assert_encode_decode_rep(GlobalRep::StatsGot { count: 177, add: 277, update: 377, lend: 477, repay: 577, heartbeat: 677, stats: 777, });
+    }
+
+    #[test]
+    fn globalrep_flushed() {
+        assert_encode_decode_rep(GlobalRep::Flushed);
     }
 
     #[test]
