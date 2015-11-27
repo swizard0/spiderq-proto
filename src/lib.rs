@@ -349,8 +349,8 @@ impl GlobalRep {
             (12, buf) =>
                 Ok((GlobalRep::Terminated, buf)),
             (13, buf) => {
-                let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalRepValueFoundValueLen, NotEnoughDataForGlobalRepValueFoundValue);
-                Ok((GlobalRep::ValueFound(key), buf))
+                let (value, buf) = try_get_vec!(buf, NotEnoughDataForGlobalRepValueFoundValueLen, NotEnoughDataForGlobalRepValueFoundValue);
+                Ok((GlobalRep::ValueFound(value), buf))
             },
             (14, buf) =>
                 Ok((GlobalRep::ValueNotFound, buf)),
