@@ -18,12 +18,18 @@ pub enum RepayStatus {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum LendMode {
+    Block,
+    Poll,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum GlobalReq {
     Count,
     Add(Key, Value),
     Update(Key, Value),
     Lookup(Key),
-    Lend { timeout: u64, },
+    Lend { timeout: u64, mode: LendMode, },
     Repay { lend_key: u64, key: Key, value: Value, status: RepayStatus, },
     Heartbeat { lend_key: u64, key: Key, timeout: u64, },
     Stats,
@@ -41,6 +47,7 @@ pub enum GlobalRep {
     ValueFound(Value),
     ValueNotFound,
     Lent { lend_key: u64, key: Key, value: Value, },
+    QueueEmpty,
     Repaid,
     Heartbeaten,
     Skipped,
@@ -59,6 +66,8 @@ pub enum ProtoError {
     NotEnoughDataForGlobalReqAddValueLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqAddValue { required: usize, given: usize, },
     NotEnoughDataForGlobalReqLendTimeout { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqLendMode { required: usize, given: usize, },
+    InvalidGlobalReqLendModeTag(u8),
     NotEnoughDataForGlobalReqRepayLendKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqRepayKeyLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqRepayKey { required: usize, given: usize, },
@@ -105,7 +114,7 @@ pub enum ProtoError {
 }
 
 macro_rules! try_get {
-    ($data:ident, $ty:ty, $reader:ident, $err:ident) => 
+    ($data:ident, $ty:ty, $reader:ident, $err:ident) =>
         (if $data.len() < size_of::<$ty>() {
             return Err(ProtoError::$err { required: size_of::<$ty>(), given: $data.len(), })
         } else {
@@ -127,8 +136,8 @@ trait U8Support {
 }
 
 impl U8Support for BigEndian {
-    fn read_u8(buf: &[u8]) -> u8 { 
-        buf[0] 
+    fn read_u8(buf: &[u8]) -> u8 {
+        buf[0]
     }
 
     fn write_u8(buf: &mut [u8], n: u8) {
@@ -163,7 +172,7 @@ macro_rules! put_vec_adv {
 impl GlobalReq {
     pub fn decode<'a>(data: &'a [u8]) -> Result<(GlobalReq, &'a [u8]), ProtoError> {
         match try_get!(data, u8, read_u8, NotEnoughDataForGlobalReqTag) {
-            (1, buf) => 
+            (1, buf) =>
                 Ok((GlobalReq::Count, buf)),
             (2, buf) => {
                 let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqAddKeyLen, NotEnoughDataForGlobalReqAddKey);
@@ -177,7 +186,12 @@ impl GlobalReq {
             },
             (4, buf) => {
                 let (timeout, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalReqLendTimeout);
-                Ok((GlobalReq::Lend { timeout: timeout, }, buf))
+                let (mode, buf) = match try_get!(buf, u8, read_u8, NotEnoughDataForGlobalReqLendMode) {
+                    (1, buf) => (LendMode::Block, buf),
+                    (2, buf) => (LendMode::Poll, buf),
+                    (mode_tag, _) => return Err(ProtoError::InvalidGlobalReqLendModeTag(mode_tag)),
+                };
+                Ok((GlobalReq::Lend { timeout: timeout, mode: mode, }, buf))
             },
             (5, buf) => {
                 let (lend_key, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalReqRepayLendKey);
@@ -218,7 +232,7 @@ impl GlobalReq {
             &GlobalReq::Count | &GlobalReq::Stats | &GlobalReq::Terminate | &GlobalReq::Flush => 0,
             &GlobalReq::Add(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Update(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
-            &GlobalReq::Lend { .. } => size_of::<u64>(),
+            &GlobalReq::Lend { .. } => size_of::<u64>() + size_of::<u8>(),
             &GlobalReq::Repay { key: ref rkey, value: ref rvalue, .. } =>
                 size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len() + size_of::<u8>(),
             &GlobalReq::Heartbeat { key: ref k, .. } => size_of::<u64>() + size_of::<u32>() + k.len() + size_of::<u64>(),
@@ -242,9 +256,13 @@ impl GlobalReq {
                 let area = put_vec_adv!(area, value);
                 area
             },
-            &GlobalReq::Lend { timeout: t, } => {
+            &GlobalReq::Lend { timeout: t, mode: ref m, } => {
                 let area = put_adv!(area, u8, write_u8, 4);
-                put_adv!(area, u64, write_u64, t)
+                let area = put_adv!(area, u64, write_u64, t);
+                put_adv!(area, u8, write_u8, match m {
+                    &LendMode::Block => 1,
+                    &LendMode::Poll => 2,
+                })
             },
             &GlobalReq::Repay { lend_key: rlend_key, key: ref rkey, value: ref rvalue, status: ref rstatus } => {
                 let area = put_adv!(area, u8, write_u8, 5);
@@ -338,6 +356,8 @@ impl GlobalRep {
                 Ok((GlobalRep::ValueNotFound, buf)),
             (15, buf) =>
                 Ok((GlobalRep::Flushed, buf)),
+            (16, buf) =>
+                Ok((GlobalRep::QueueEmpty, buf)),
             (tag, _) =>
                 return Err(ProtoError::InvalidGlobalRepTag(tag)),
         }
@@ -355,7 +375,8 @@ impl GlobalRep {
             &GlobalRep::Skipped |
             &GlobalRep::Terminated |
             &GlobalRep::ValueNotFound |
-            &GlobalRep::Flushed => 0,
+            &GlobalRep::Flushed |
+            &GlobalRep::QueueEmpty => 0,
             &GlobalRep::Lent { key: ref rkey, value: ref rvalue, .. } => size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len(),
             &GlobalRep::StatsGot { .. } => size_of::<u64>() * 8,
             &GlobalRep::Error(ref err) => err.encode_len(),
@@ -424,6 +445,8 @@ impl GlobalRep {
                 put_adv!(area, u8, write_u8, 14),
             &GlobalRep::Flushed =>
                 put_adv!(area, u8, write_u8, 15),
+            &GlobalRep::QueueEmpty =>
+                put_adv!(area, u8, write_u8, 16),
         }
     }
 }
@@ -515,6 +538,8 @@ impl ProtoError {
             (48, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqLookupKey),
             (49, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepValueFoundValueLen),
             (50, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepValueFoundValue),
+            (51, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqLendMode),
+            (52, buf) => decode_tag!(buf, InvalidGlobalReqLendModeTag),
             (tag, _) => return Err(ProtoError::InvalidProtoErrorTag(tag)),
         }
     }
@@ -565,12 +590,14 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqLookupKeyLen { .. } |
             &ProtoError::NotEnoughDataForGlobalReqLookupKey { .. } |
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValueLen { .. } |
-            &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { .. } =>
+            &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqLendMode { .. } =>
                 size_of::<u32>() + size_of::<u32>(),
             &ProtoError::InvalidGlobalRepTag(..) |
             &ProtoError::InvalidGlobalReqTag(..) |
             &ProtoError::InvalidGlobalReqRepayRepayStatusTag(..) |
-            &ProtoError::InvalidProtoErrorTag(..) =>
+            &ProtoError::InvalidProtoErrorTag(..) |
+            &ProtoError::InvalidGlobalReqLendModeTag(..) =>
                 size_of::<u8>(),
             &ProtoError::DbQueueOutOfSync(ref key) => size_of::<u32>() + key.len(),
 
@@ -633,6 +660,8 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqLookupKey { required: r, given: g, } => encode_not_enough!(area, 48, r, g),
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValueLen { required: r, given: g, } => encode_not_enough!(area, 49, r, g),
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { required: r, given: g, } => encode_not_enough!(area, 50, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqLendMode { required: r, given: g, } => encode_not_enough!(area, 51, r, g),
+            &ProtoError::InvalidGlobalReqLendModeTag(tag) => encode_tag!(area, 52, tag),
         }
     }
 }
@@ -640,7 +669,7 @@ impl ProtoError {
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
-    use super::{Key, Value, RepayStatus, GlobalReq, GlobalRep, ProtoError};
+    use super::{Key, Value, RepayStatus, LendMode, GlobalReq, GlobalRep, ProtoError};
 
     macro_rules! defassert_encode_decode {
         ($name:ident, $ty:ty, $class:ident) => (fn $name(r: $ty) {
@@ -685,8 +714,13 @@ mod test {
     }
 
     #[test]
-    fn globalreq_lend() {
-        assert_encode_decode_req(GlobalReq::Lend { timeout: 177, });
+    fn globalreq_lend_block() {
+        assert_encode_decode_req(GlobalReq::Lend { timeout: 177, mode: LendMode::Block, });
+    }
+
+    #[test]
+    fn globalreq_lend_poll() {
+        assert_encode_decode_req(GlobalReq::Lend { timeout: 177, mode: LendMode::Poll, });
     }
 
     #[test]
@@ -769,6 +803,11 @@ mod test {
     fn globalrep_lent() {
         let (key, value) = dummy_key_value();
         assert_encode_decode_rep(GlobalRep::Lent { lend_key: 177, key: key, value: value, });
+    }
+
+    #[test]
+    fn globalrep_queueempty() {
+        assert_encode_decode_rep(GlobalRep::QueueEmpty);
     }
 
     #[test]
