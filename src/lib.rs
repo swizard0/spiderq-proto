@@ -1,9 +1,7 @@
-#![feature(slice_bytes)]
 extern crate byteorder;
 
 use std::sync::Arc;
 use std::mem::size_of;
-use std::slice::bytes;
 use byteorder::{ByteOrder, BigEndian};
 
 pub type Key = Arc<Vec<u8>>;
@@ -25,6 +23,7 @@ pub enum LendMode {
 
 #[derive(Debug, PartialEq)]
 pub enum GlobalReq {
+    Ping,
     Count,
     Add(Key, Value),
     Update(Key, Value),
@@ -39,6 +38,7 @@ pub enum GlobalReq {
 
 #[derive(Debug, PartialEq)]
 pub enum GlobalRep {
+    Pong,
     Counted(usize),
     Added,
     Kept,
@@ -164,7 +164,7 @@ macro_rules! put_vec_adv {
         let dst = $area;
         let src_len_value = src.len() as u32;
         let area = put_adv!(dst, u32, write_u32, src_len_value);
-        bytes::copy_memory(src, area);
+        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), area.as_mut_ptr(), src.len()); }
         &mut area[src.len() ..]
     })
 }
@@ -222,6 +222,8 @@ impl GlobalReq {
             },
             (10, buf) =>
                 Ok((GlobalReq::Flush, buf)),
+            (11, buf) =>
+                Ok((GlobalReq::Ping, buf)),
             (tag, _) =>
                 return Err(ProtoError::InvalidGlobalReqTag(tag)),
         }
@@ -229,7 +231,7 @@ impl GlobalReq {
 
     pub fn encode_len(&self) -> usize {
         size_of::<u8>() + match self {
-            &GlobalReq::Count | &GlobalReq::Stats | &GlobalReq::Terminate | &GlobalReq::Flush => 0,
+            &GlobalReq::Ping | &GlobalReq::Count | &GlobalReq::Stats | &GlobalReq::Terminate | &GlobalReq::Flush => 0,
             &GlobalReq::Add(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Update(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Lend { .. } => size_of::<u64>() + size_of::<u8>(),
@@ -293,6 +295,8 @@ impl GlobalReq {
             },
             &GlobalReq::Flush =>
                 put_adv!(area, u8, write_u8, 10),
+            &GlobalReq::Ping =>
+                put_adv!(area, u8, write_u8, 11),
         }
     }
 }
@@ -358,6 +362,8 @@ impl GlobalRep {
                 Ok((GlobalRep::Flushed, buf)),
             (16, buf) =>
                 Ok((GlobalRep::QueueEmpty, buf)),
+            (17, buf) =>
+                Ok((GlobalRep::Pong, buf)),
             (tag, _) =>
                 return Err(ProtoError::InvalidGlobalRepTag(tag)),
         }
@@ -376,6 +382,7 @@ impl GlobalRep {
             &GlobalRep::Terminated |
             &GlobalRep::ValueNotFound |
             &GlobalRep::Flushed |
+            &GlobalRep::Pong |
             &GlobalRep::QueueEmpty => 0,
             &GlobalRep::Lent { key: ref rkey, value: ref rvalue, .. } => size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len(),
             &GlobalRep::StatsGot { .. } => size_of::<u64>() * 8,
@@ -447,6 +454,8 @@ impl GlobalRep {
                 put_adv!(area, u8, write_u8, 15),
             &GlobalRep::QueueEmpty =>
                 put_adv!(area, u8, write_u8, 16),
+            &GlobalRep::Pong =>
+                put_adv!(area, u8, write_u8, 17),
         }
     }
 }
@@ -691,6 +700,11 @@ mod test {
     }
 
     #[test]
+    fn globalreq_ping() {
+        assert_encode_decode_req(GlobalReq::Ping);
+    }
+
+    #[test]
     fn globalreq_count() {
         assert_encode_decode_req(GlobalReq::Count);
     }
@@ -761,6 +775,11 @@ mod test {
     #[test]
     fn globalreq_terminate() {
         assert_encode_decode_req(GlobalReq::Terminate);
+    }
+
+    #[test]
+    fn globalrep_pong() {
+        assert_encode_decode_rep(GlobalRep::Pong);
     }
 
     #[test]
