@@ -1,4 +1,4 @@
-# spiderq protocol Rust crate
+# spiderq protocol
 
 ## Summary
 
@@ -40,7 +40,7 @@ All numeric values (`uint16_t`, `uint32_t` и `uint64_t`) are encoded using netw
 * Reply: `Counted(total)`
 * Description: result received.
 * Parameters:
-** `total`: `uint32_t` — pending tasks count.
+ * `total`: `uint32_t` — pending tasks count.
 * Format: <pre>0x01:uint8_t total:uint32_t</pre>
 * Valid frame example for `Counted(10)`: <pre>01 00 00 00 0A</pre>
 
@@ -51,8 +51,8 @@ All numeric values (`uint16_t`, `uint32_t` и `uint64_t`) are encoded using netw
 * Request: `Add(key, value)`
 * Description: add new entry both into kv database and tasks queue. Do nothing if there is already an entry with the same key.
 * Parameters:
-** `key`: `uint8_t[]` — new entry key
-** `value`: `uint8_t[]` — new entry value
+ * `key`: `uint8_t[]` — new entry key
+ * `value`: `uint8_t[]` — new entry value
 * Format: <pre>0x02:uint8_t key_length:uint32_t key:uint8_t[] value_length:uint32_t value:uint8_t[]</pre>
 * Valid frame example for `Add("cat", "small")`: <pre>02 00 00 00 03 63 61 74 00 00 00 05 73 6D 61 6C 6C</pre>
 
@@ -77,8 +77,8 @@ or
 * Request: `Update(key, value)`
 * Description: update existing entry in kv database. Do nothing if there is no such entry with the key given.
 * Parameters:
-** `key`: `uint8_t[]` — entry key for updating
-** `value`: `uint8_t[]` — new entry value
+ * `key`: `uint8_t[]` — entry key for updating
+ * `value`: `uint8_t[]` — new entry value
 * Format: <pre>0x03:uint8_t key_length:uint32_t key:uint8_t[] value_length:uint32_t value:uint8_t[]</pre>
 * Valid frame example for `Update("cat", "small")`: <pre>03 00 00 00 03 63 61 74 00 00 00 05 73 6D 61 6C 6C</pre>
 
@@ -103,7 +103,7 @@ or
 * Request: `Lookup(key)`
 * Description: lookup existing entry value in kv database.
 * Parameters:
-** `key`: `uint8_t[]` — entry key
+ * `key`: `uint8_t[]` — entry key
 * Format: <pre>0x09:uint8_t key_length:uint32_t key:uint8_t[]</pre>
 * Valid frame example for `Lookup("cat")`: <pre>09 00 00 00 03 63 61 74</pre>
 
@@ -127,11 +127,11 @@ or
 
 * Request: `Lend(timeout_ms, mode)`
 * Description: get next task from the queue. If the task was not returned by client with `Repay()` after `timeout_ms`, it will be automatically put back into the front of the queue. If the queue was empty when `Lend()` arrives, decision is maked according to `mode` parameter:
-** When `mode` == `Block`, the request will be blocked until a task is available.
-** When `mode` == `Poll`, the `QueueEmpty` reply will be immediately returned.
+ * When `mode` == `Block`, the request will be blocked until a task is available.
+ * When `mode` == `Poll`, the `QueueEmpty` reply will be immediately returned.
 * Parameters:
-** `timeout_ms`: `uint64_t` — timeout in milliseconds. 
-** `mode`: `uint8_t` — empty queue case behaviour: `0x01` for `Block` and `0x02` for `Poll`.
+ * `timeout_ms`: `uint64_t` — timeout in milliseconds. 
+ * `mode`: `uint8_t` — empty queue case behaviour: `0x01` for `Block` and `0x02` for `Poll`.
 * Format: <pre>0x04:uint8_t timeout_ms:uint64_t mode:uint8_t</pre>
 * Valid frame example for `Lend(1000)`: <pre>04 00 00 00 00 00 00 03 E8 01</pre>
 
@@ -140,9 +140,9 @@ or
 * Reply variant: `Lent(lend_key, key, value)`
 * Description: an entry with `key` and `value` is received as a task.
 * Parameters:
-** `lend_key`: `uint64_t` — opaque task serial number, it should be returned by cliend in `Repay` or `Heartbeat` requests. 
-** `key`: `uint8_t[]` — task entry key
-** `value`: `uint8_t[]` — task entry value
+ * `lend_key`: `uint64_t` — opaque task serial number, it should be returned by cliend in `Repay` or `Heartbeat` requests. 
+ * `key`: `uint8_t[]` — task entry key
+ * `value`: `uint8_t[]` — task entry value
 * Format: <pre>0x06:uint8_t lend_key:uint64_t key_length:uint32_t key:uint8_t[] value_length:uint32_t value:uint8_t[]</pre>
 * Valid frame example for `Lent(1, "cat", "small")`: <pre>06 00 00 00 00 00 00 00 01 00 00 00 03 63 61 74 00 00 00 05 73 6D 61 6C 6C</pre>
 
@@ -159,15 +159,15 @@ or
 
 * Request: `Repay(lend_key, key, changed_value, status)`
 * Description: return the previously lent task back to the queue, change task entry value to the given `changed_value` and then modify the task priority according the `status` parameter:
-** `Penalty`: decrease priority (accumulated). The task will be positioned closer to the end of the queue.
-** `Reward`: increase priority (accumulated). The task will be positioned closer to the front of the queue.
-** `Front`: set the maximum priority.
-** `Drop`: drop the task entirely from the queue. Entry will remain in kv database, but no `Lend()` request will return it.
+ * `Penalty`: decrease priority (accumulated). The task will be positioned closer to the end of the queue.
+ * `Reward`: increase priority (accumulated). The task will be positioned closer to the front of the queue.
+ * `Front`: set the maximum priority.
+ * `Drop`: drop the task entirely from the queue. Entry will remain in kv database, but no `Lend()` request will return it.
 * Parameters:
-** `lend_key`: `uint64_t` — opaque task serial number that has been received by `Lend()`. 
-** `key`: `uint8_t[]` — task entry key that has been received by `Lend()`.
-** `changed_value`: `uint8_t[]` — new entry value.
-** `status`: `uint8_t` — `0x01` for `Penalty`, `0x02` for `Reward`, `0x03` for `Front` and `0x04` for `Drop`. 
+ * `lend_key`: `uint64_t` — opaque task serial number that has been received by `Lend()`. 
+ * `key`: `uint8_t[]` — task entry key that has been received by `Lend()`.
+ * `changed_value`: `uint8_t[]` — new entry value.
+ * `status`: `uint8_t` — `0x01` for `Penalty`, `0x02` for `Reward`, `0x03` for `Front` and `0x04` for `Drop`. 
 * Format: <pre>0x05:uint8_t lend_key:uint64_t key_length:uint32_t key:uint8_t[] changed_value_length:uint32_t changed_value:uint8_t[] status:uint8_t</pre>
 * Valid frame example for `Repay(1, "cat", "big", Reward)`: <pre>05 00 00 00 00 00 00 00 01 00 00 00 03 63 61 74 00 00 00 03 62 69 67 02</pre>
 
@@ -192,9 +192,9 @@ or
 * Request: `Heartbeat(lend_key, key, timeout_ms)`
 * Description: modify task timeout that was previously received by `Lend()`, but not yet returned to the queue (with `Repay()` request or automatically due timeout).
 * Parameters:
-** `lend_key`: `uint64_t` — opaque task serial number that has been received by `Lend()`. 
-** `key`: `uint8_t[]` — task entry key that has been received by `Lend()`.
-** `timeout_ms`: `uint64_t` — new timeout in milliseconds for the task.
+ * `lend_key`: `uint64_t` — opaque task serial number that has been received by `Lend()`. 
+ * `key`: `uint8_t[]` — task entry key that has been received by `Lend()`.
+ * `timeout_ms`: `uint64_t` — new timeout in milliseconds for the task.
 * Format: <pre>0x06:uint8_t lend_key:uint64_t key_length:uint32_t key:uint8_t[] timeout_ms:uint64_t</pre>
 * Valid frame example for `Heartbeat(1, "cat", 2000)`: <pre>06 00 00 00 00 00 00 00 01 00 00 00 03 63 61 74 00 00 00 00 00 00 07 D0</pre>
 
@@ -226,14 +226,14 @@ or
 * Reply: `StatsGot(count, add, update, lookup, lend, repay, heartbeat, stats)`
 * Description: counters values were received.
 * Parameters:
-** `count`: `uint64_t` — count of `Count` requests after server startup.
-** `add`: `uint64_t` — count of `Add` requests after server startup.
-** `update`: `uint64_t` — count of `Update` requests after server startup.
-** `lookup`: `uint64_t` — count of `Lookup` requests after server startup.
-** `lend`: `uint64_t` — count of `Lend` requests after server startup.
-** `repay`: `uint64_t` — count of `Repay` requests after server startup.
-** `heartbeat`: `uint64_t` — count of `Heartbeat` requests after server startup.
-** `stats`: `uint64_t` — count of `Stats` requests after server startup.
+ * `count`: `uint64_t` — count of `Count` requests after server startup.
+ * `add`: `uint64_t` — count of `Add` requests after server startup.
+ * `update`: `uint64_t` — count of `Update` requests after server startup.
+ * `lookup`: `uint64_t` — count of `Lookup` requests after server startup.
+ * `lend`: `uint64_t` — count of `Lend` requests after server startup.
+ * `repay`: `uint64_t` — count of `Repay` requests after server startup.
+ * `heartbeat`: `uint64_t` — count of `Heartbeat` requests after server startup.
+ * `stats`: `uint64_t` — count of `Stats` requests after server startup.
 
 * Format: <pre>0x0A:uint8_t count:uint64_t add:uint64_t update:uint64_t lookup:uint64_t lend:uint64_t repay:uint64_t heartbeat:uint64_t stats:uint64_t</pre>
 * Valid frame example for `StatsGot(1, 2, 3, 4, 5, 6, 7, 8)`: <pre>0A 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00 05 00 00 00 00 00 00 00 06 00 00 00 00 00 00 00 07 00 00 00 00 00 00 00 08</pre>
