@@ -22,10 +22,16 @@ pub enum LendMode {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum AddMode {
+    Head,
+    Tail,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum GlobalReq {
     Ping,
     Count,
-    Add(Key, Value),
+    Add { key: Key, value: Value, mode: AddMode, },
     Update(Key, Value),
     Lookup(Key),
     Lend { timeout: u64, mode: LendMode, },
@@ -65,6 +71,8 @@ pub enum ProtoError {
     NotEnoughDataForGlobalReqAddKey { required: usize, given: usize, },
     NotEnoughDataForGlobalReqAddValueLen { required: usize, given: usize, },
     NotEnoughDataForGlobalReqAddValue { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqAddMode { required: usize, given: usize, },
+    InvalidGlobalReqAddModeTag(u8),
     NotEnoughDataForGlobalReqLendTimeout { required: usize, given: usize, },
     NotEnoughDataForGlobalReqLendMode { required: usize, given: usize, },
     InvalidGlobalReqLendModeTag(u8),
@@ -177,7 +185,13 @@ impl GlobalReq {
             (2, buf) => {
                 let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqAddKeyLen, NotEnoughDataForGlobalReqAddKey);
                 let (value, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqAddValueLen, NotEnoughDataForGlobalReqAddValue);
-                Ok((GlobalReq::Add(key, value), buf))
+                let (mode, buf) = match try_get!(buf, u8, read_u8, NotEnoughDataForGlobalReqAddMode) {
+                    (1, buf) => (AddMode::Head, buf),
+                    (2, buf) => (AddMode::Tail, buf),
+                    (mode_tag, _) => return Err(ProtoError::InvalidGlobalReqAddModeTag(mode_tag)),
+                };
+
+                Ok((GlobalReq::Add { key: key, value: value, mode: mode, }, buf))
             },
             (3, buf) => {
                 let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqUpdateKeyLen, NotEnoughDataForGlobalReqUpdateKey);
@@ -232,7 +246,7 @@ impl GlobalReq {
     pub fn encode_len(&self) -> usize {
         size_of::<u8>() + match self {
             &GlobalReq::Ping | &GlobalReq::Count | &GlobalReq::Stats | &GlobalReq::Terminate | &GlobalReq::Flush => 0,
-            &GlobalReq::Add(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
+            &GlobalReq::Add { key: ref k, value: ref v, .. } => size_of::<u32>() * 2 + k.len() + v.len() + size_of::<u8>(),
             &GlobalReq::Update(ref key, ref value) => size_of::<u32>() * 2 + key.len() + value.len(),
             &GlobalReq::Lend { .. } => size_of::<u64>() + size_of::<u8>(),
             &GlobalReq::Repay { key: ref rkey, value: ref rvalue, .. } =>
@@ -246,11 +260,14 @@ impl GlobalReq {
         match self {
             &GlobalReq::Count =>
                 put_adv!(area, u8, write_u8, 1),
-            &GlobalReq::Add(ref key, ref value) => {
+            &GlobalReq::Add { key: ref k, value: ref v, mode: ref m, } => {
                 let area = put_adv!(area, u8, write_u8, 2);
-                let area = put_vec_adv!(area, key);
-                let area = put_vec_adv!(area, value);
-                area
+                let area = put_vec_adv!(area, k);
+                let area = put_vec_adv!(area, v);
+                put_adv!(area, u8, write_u8, match m {
+                    &AddMode::Head => 1,
+                    &AddMode::Tail => 2,
+                })
             },
             &GlobalReq::Update(ref key, ref value) => {
                 let area = put_adv!(area, u8, write_u8, 3);
@@ -549,6 +566,8 @@ impl ProtoError {
             (50, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepValueFoundValue),
             (51, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqLendMode),
             (52, buf) => decode_tag!(buf, InvalidGlobalReqLendModeTag),
+            (53, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqAddMode),
+            (54, buf) => decode_tag!(buf, InvalidGlobalReqAddModeTag),
             (tag, _) => return Err(ProtoError::InvalidProtoErrorTag(tag)),
         }
     }
@@ -600,13 +619,15 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqLookupKey { .. } |
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValueLen { .. } |
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { .. } |
-            &ProtoError::NotEnoughDataForGlobalReqLendMode { .. } =>
+            &ProtoError::NotEnoughDataForGlobalReqLendMode { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqAddMode { .. } =>
                 size_of::<u32>() + size_of::<u32>(),
             &ProtoError::InvalidGlobalRepTag(..) |
             &ProtoError::InvalidGlobalReqTag(..) |
             &ProtoError::InvalidGlobalReqRepayRepayStatusTag(..) |
             &ProtoError::InvalidProtoErrorTag(..) |
-            &ProtoError::InvalidGlobalReqLendModeTag(..) =>
+            &ProtoError::InvalidGlobalReqLendModeTag(..) |
+            &ProtoError::InvalidGlobalReqAddModeTag(..) =>
                 size_of::<u8>(),
             &ProtoError::DbQueueOutOfSync(ref key) => size_of::<u32>() + key.len(),
 
@@ -671,6 +692,8 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { required: r, given: g, } => encode_not_enough!(area, 50, r, g),
             &ProtoError::NotEnoughDataForGlobalReqLendMode { required: r, given: g, } => encode_not_enough!(area, 51, r, g),
             &ProtoError::InvalidGlobalReqLendModeTag(tag) => encode_tag!(area, 52, tag),
+            &ProtoError::NotEnoughDataForGlobalReqAddMode { required: r, given: g, } => encode_not_enough!(area, 53, r, g),
+            &ProtoError::InvalidGlobalReqAddModeTag(tag) => encode_tag!(area, 54, tag),
         }
     }
 }
@@ -678,7 +701,7 @@ impl ProtoError {
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
-    use super::{Key, Value, RepayStatus, LendMode, GlobalReq, GlobalRep, ProtoError};
+    use super::{Key, Value, RepayStatus, LendMode, AddMode, GlobalReq, GlobalRep, ProtoError};
 
     macro_rules! defassert_encode_decode {
         ($name:ident, $ty:ty, $class:ident) => (fn $name(r: $ty) {
@@ -710,9 +733,15 @@ mod test {
     }
 
     #[test]
-    fn globalreq_add() {
+    fn globalreq_add_head() {
         let (key, value) = dummy_key_value();
-        assert_encode_decode_req(GlobalReq::Add(key, value));
+        assert_encode_decode_req(GlobalReq::Add { key: key, value: value, mode: AddMode::Head });
+    }
+
+    #[test]
+    fn globalreq_add_tail() {
+        let (key, value) = dummy_key_value();
+        assert_encode_decode_req(GlobalReq::Add { key: key, value: value, mode: AddMode::Tail });
     }
 
     #[test]
@@ -1095,5 +1124,25 @@ mod test {
     #[test]
     fn globalrep_error_notenoughdataforglobalreqheartbeattimeout() {
         assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_invalidglobalreqlendmodetag() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::InvalidGlobalReqLendModeTag(177)));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreqlendmode() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqLendMode { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_invalidglobalreqaddmodetag() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::InvalidGlobalReqAddModeTag(177)));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreqaddmode() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqAddMode { required: 177, given: 177, }));
     }
 }
