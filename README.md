@@ -251,7 +251,7 @@ or
 
 #### Reply.
 
-* Reply: `StatsGot(count, add, update, lookup, lend, repay, heartbeat, stats)`
+* Reply: `StatsGot(ping, count, add, update, lookup, remove, lend, repay, heartbeat, stats)`
 * Description: counters values were received.
 * Parameters:
  * `ping`: `uint64_t` — count of `Ping` requests after server startup.
