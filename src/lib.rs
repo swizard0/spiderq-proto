@@ -34,6 +34,7 @@ pub enum GlobalReq {
     Add { key: Key, value: Value, mode: AddMode, },
     Update(Key, Value),
     Lookup(Key),
+    Remove(Key),
     Lend { timeout: u64, mode: LendMode, },
     Repay { lend_key: u64, key: Key, value: Value, status: RepayStatus, },
     Heartbeat { lend_key: u64, key: Key, timeout: u64, },
@@ -52,12 +53,25 @@ pub enum GlobalRep {
     NotFound,
     ValueFound(Value),
     ValueNotFound,
+    Removed,
+    NotRemoved,
     Lent { lend_key: u64, key: Key, value: Value, },
     QueueEmpty,
     Repaid,
     Heartbeaten,
     Skipped,
-    StatsGot { count: usize, add: usize, update: usize, lookup: usize, lend: usize, repay: usize, heartbeat: usize, stats: usize, },
+    StatsGot {
+        ping: usize,
+        count: usize,
+        add: usize,
+        update: usize,
+        lookup: usize,
+        remove: usize,
+        lend: usize,
+        repay: usize,
+        heartbeat: usize,
+        stats: usize,
+    },
     Flushed,
     Terminated,
     Error(ProtoError),
@@ -92,9 +106,11 @@ pub enum ProtoError {
     NotEnoughDataForGlobalRepLentValueLen { required: usize, given: usize, },
     NotEnoughDataForGlobalRepLentValue { required: usize, given: usize, },
     NotEnoughDataForGlobalRepStatsCount { required: usize, given: usize, },
+    NotEnoughDataForGlobalRepStatsPing { required: usize, given: usize, },
     NotEnoughDataForGlobalRepStatsAdd { required: usize, given: usize, },
     NotEnoughDataForGlobalRepStatsUpdate { required: usize, given: usize, },
     NotEnoughDataForGlobalRepStatsLookup { required: usize, given: usize, },
+    NotEnoughDataForGlobalRepStatsRemove { required: usize, given: usize, },
     NotEnoughDataForGlobalRepStatsLend { required: usize, given: usize, },
     NotEnoughDataForGlobalRepStatsRepay { required: usize, given: usize, },
     NotEnoughDataForGlobalRepStatsHeartbeat { required: usize, given: usize, },
@@ -119,6 +135,8 @@ pub enum ProtoError {
     NotEnoughDataForGlobalReqLookupKey { required: usize, given: usize, },
     NotEnoughDataForGlobalRepValueFoundValueLen { required: usize, given: usize, },
     NotEnoughDataForGlobalRepValueFoundValue { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqRemoveKeyLen { required: usize, given: usize, },
+    NotEnoughDataForGlobalReqRemoveKey { required: usize, given: usize, },
 }
 
 macro_rules! try_get {
@@ -238,6 +256,10 @@ impl GlobalReq {
                 Ok((GlobalReq::Flush, buf)),
             (11, buf) =>
                 Ok((GlobalReq::Ping, buf)),
+            (12, buf) => {
+                let (key, buf) = try_get_vec!(buf, NotEnoughDataForGlobalReqRemoveKeyLen, NotEnoughDataForGlobalReqRemoveKey);
+                Ok((GlobalReq::Remove(key), buf))
+            },
             (tag, _) =>
                 return Err(ProtoError::InvalidGlobalReqTag(tag)),
         }
@@ -253,6 +275,7 @@ impl GlobalReq {
                 size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len() + size_of::<u8>(),
             &GlobalReq::Heartbeat { key: ref k, .. } => size_of::<u64>() + size_of::<u32>() + k.len() + size_of::<u64>(),
             &GlobalReq::Lookup(ref key) => size_of::<u32>() + key.len(),
+            &GlobalReq::Remove(ref key) => size_of::<u32>() + key.len(),
         }
     }
 
@@ -314,6 +337,11 @@ impl GlobalReq {
                 put_adv!(area, u8, write_u8, 10),
             &GlobalReq::Ping =>
                 put_adv!(area, u8, write_u8, 11),
+            &GlobalReq::Remove(ref key) => {
+                let area = put_adv!(area, u8, write_u8, 12);
+                let area = put_vec_adv!(area, key);
+                area
+            },
         }
     }
 }
@@ -346,22 +374,28 @@ impl GlobalRep {
             (9, buf) =>
                 Ok((GlobalRep::Skipped, buf)),
             (10, buf) => {
+                let (stats_ping, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsPing);
                 let (stats_count, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsCount);
                 let (stats_add, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsAdd);
                 let (stats_update, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsUpdate);
                 let (stats_lookup, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsLookup);
+                let (stats_remove, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsRemove);
                 let (stats_lend, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsLend);
                 let (stats_repay, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsRepay);
                 let (stats_heartbeat, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsHeartbeat);
                 let (stats_stats, buf) = try_get!(buf, u64, read_u64, NotEnoughDataForGlobalRepStatsStats);
-                Ok((GlobalRep::StatsGot { count: stats_count as usize,
-                                          add: stats_add as usize,
-                                          update: stats_update as usize,
-                                          lookup: stats_lookup as usize,
-                                          lend: stats_lend as usize,
-                                          repay: stats_repay as usize,
-                                          heartbeat: stats_heartbeat as usize,
-                                          stats: stats_stats as usize, }, buf))
+                Ok((GlobalRep::StatsGot {
+                    ping: stats_ping as usize,
+                    count: stats_count as usize,
+                    add: stats_add as usize,
+                    update: stats_update as usize,
+                    lookup: stats_lookup as usize,
+                    remove: stats_remove as usize,
+                    lend: stats_lend as usize,
+                    repay: stats_repay as usize,
+                    heartbeat: stats_heartbeat as usize,
+                    stats: stats_stats as usize,
+                }, buf))
             },
             (11, buf) => {
                 let (err, buf) = try!(ProtoError::decode(buf));
@@ -381,6 +415,10 @@ impl GlobalRep {
                 Ok((GlobalRep::QueueEmpty, buf)),
             (17, buf) =>
                 Ok((GlobalRep::Pong, buf)),
+            (18, buf) =>
+                Ok((GlobalRep::Removed, buf)),
+            (19, buf) =>
+                Ok((GlobalRep::NotRemoved, buf)),
             (tag, _) =>
                 return Err(ProtoError::InvalidGlobalRepTag(tag)),
         }
@@ -400,9 +438,11 @@ impl GlobalRep {
             &GlobalRep::ValueNotFound |
             &GlobalRep::Flushed |
             &GlobalRep::Pong |
+            &GlobalRep::Removed |
+            &GlobalRep::NotRemoved |
             &GlobalRep::QueueEmpty => 0,
             &GlobalRep::Lent { key: ref rkey, value: ref rvalue, .. } => size_of::<u64>() + size_of::<u32>() * 2 + rkey.len() + rvalue.len(),
-            &GlobalRep::StatsGot { .. } => size_of::<u64>() * 8,
+            &GlobalRep::StatsGot { .. } => size_of::<u64>() * 10,
             &GlobalRep::Error(ref err) => err.encode_len(),
             &GlobalRep::ValueFound(ref value) => size_of::<u32>() + value.len(),
         }
@@ -435,19 +475,25 @@ impl GlobalRep {
                 put_adv!(area, u8, write_u8, 8),
             &GlobalRep::Skipped =>
                 put_adv!(area, u8, write_u8, 9),
-            &GlobalRep::StatsGot { count: stats_count,
-                                   add: stats_add,
-                                   update: stats_update,
-                                   lookup: stats_lookup,
-                                   lend: stats_lend,
-                                   repay: stats_repay,
-                                   heartbeat: stats_heartbeat,
-                                   stats: stats_stats, } => {
+            &GlobalRep::StatsGot {
+                ping: stats_ping,
+                count: stats_count,
+                add: stats_add,
+                update: stats_update,
+                lookup: stats_lookup,
+                remove: stats_remove,
+                lend: stats_lend,
+                repay: stats_repay,
+                heartbeat: stats_heartbeat,
+                stats: stats_stats,
+            } => {
                 let area = put_adv!(area, u8, write_u8, 10);
+                let area = put_adv!(area, u64, write_u64, stats_ping as u64);
                 let area = put_adv!(area, u64, write_u64, stats_count as u64);
                 let area = put_adv!(area, u64, write_u64, stats_add as u64);
                 let area = put_adv!(area, u64, write_u64, stats_update as u64);
                 let area = put_adv!(area, u64, write_u64, stats_lookup as u64);
+                let area = put_adv!(area, u64, write_u64, stats_remove as u64);
                 let area = put_adv!(area, u64, write_u64, stats_lend as u64);
                 let area = put_adv!(area, u64, write_u64, stats_repay as u64);
                 let area = put_adv!(area, u64, write_u64, stats_heartbeat as u64);
@@ -473,6 +519,10 @@ impl GlobalRep {
                 put_adv!(area, u8, write_u8, 16),
             &GlobalRep::Pong =>
                 put_adv!(area, u8, write_u8, 17),
+            &GlobalRep::Removed =>
+                put_adv!(area, u8, write_u8, 18),
+            &GlobalRep::NotRemoved =>
+                put_adv!(area, u8, write_u8, 19),
         }
     }
 }
@@ -568,6 +618,10 @@ impl ProtoError {
             (52, buf) => decode_tag!(buf, InvalidGlobalReqLendModeTag),
             (53, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqAddMode),
             (54, buf) => decode_tag!(buf, InvalidGlobalReqAddModeTag),
+            (55, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsPing),
+            (56, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalRepStatsRemove),
+            (57, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRemoveKeyLen),
+            (58, buf) => decode_not_enough!(buf, NotEnoughDataForGlobalReqRemoveKey),
             (tag, _) => return Err(ProtoError::InvalidProtoErrorTag(tag)),
         }
     }
@@ -593,10 +647,12 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalRepLentKey { .. } |
             &ProtoError::NotEnoughDataForGlobalRepLentValueLen { .. } |
             &ProtoError::NotEnoughDataForGlobalRepLentValue { .. } |
+            &ProtoError::NotEnoughDataForGlobalRepStatsPing { .. } |
             &ProtoError::NotEnoughDataForGlobalRepStatsCount { .. } |
             &ProtoError::NotEnoughDataForGlobalRepStatsAdd { .. } |
             &ProtoError::NotEnoughDataForGlobalRepStatsUpdate { .. } |
             &ProtoError::NotEnoughDataForGlobalRepStatsLookup { .. } |
+            &ProtoError::NotEnoughDataForGlobalRepStatsRemove { .. } |
             &ProtoError::NotEnoughDataForGlobalRepStatsLend { .. } |
             &ProtoError::NotEnoughDataForGlobalRepStatsRepay { .. } |
             &ProtoError::NotEnoughDataForGlobalRepStatsHeartbeat { .. } |
@@ -617,6 +673,8 @@ impl ProtoError {
             &ProtoError::NotEnoughDataForGlobalReqHeartbeatTimeout { .. } |
             &ProtoError::NotEnoughDataForGlobalReqLookupKeyLen { .. } |
             &ProtoError::NotEnoughDataForGlobalReqLookupKey { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqRemoveKeyLen { .. } |
+            &ProtoError::NotEnoughDataForGlobalReqRemoveKey { .. } |
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValueLen { .. } |
             &ProtoError::NotEnoughDataForGlobalRepValueFoundValue { .. } |
             &ProtoError::NotEnoughDataForGlobalReqLendMode { .. } |
@@ -694,6 +752,10 @@ impl ProtoError {
             &ProtoError::InvalidGlobalReqLendModeTag(tag) => encode_tag!(area, 52, tag),
             &ProtoError::NotEnoughDataForGlobalReqAddMode { required: r, given: g, } => encode_not_enough!(area, 53, r, g),
             &ProtoError::InvalidGlobalReqAddModeTag(tag) => encode_tag!(area, 54, tag),
+            &ProtoError::NotEnoughDataForGlobalRepStatsPing { required: r, given: g, } => encode_not_enough!(area, 55, r, g),
+            &ProtoError::NotEnoughDataForGlobalRepStatsRemove { required: r, given: g, } => encode_not_enough!(area, 56, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRemoveKeyLen { required: r, given: g, } => encode_not_enough!(area, 57, r, g),
+            &ProtoError::NotEnoughDataForGlobalReqRemoveKey { required: r, given: g, } => encode_not_enough!(area, 58, r, g),
         }
     }
 }
@@ -754,6 +816,12 @@ mod test {
     fn globalreq_lookup() {
         let (key, _) = dummy_key_value();
         assert_encode_decode_req(GlobalReq::Lookup(key));
+    }
+
+    #[test]
+    fn globalreq_remove() {
+        let (key, _) = dummy_key_value();
+        assert_encode_decode_req(GlobalReq::Remove(key));
     }
 
     #[test]
@@ -875,14 +943,18 @@ mod test {
 
     #[test]
     fn globalrep_stats() {
-        assert_encode_decode_rep(GlobalRep::StatsGot { count: 177,
-                                                       add: 277,
-                                                       update: 377,
-                                                       lookup: 477,
-                                                       lend: 577,
-                                                       repay: 677,
-                                                       heartbeat: 777,
-                                                       stats: 877, });
+        assert_encode_decode_rep(GlobalRep::StatsGot {
+            ping: 77,
+            count: 177,
+            add: 277,
+            update: 377,
+            lookup: 477,
+            remove: 577,
+            lend: 677,
+            repay: 777,
+            heartbeat: 877,
+            stats: 977,
+        });
     }
 
     #[test]
@@ -1144,5 +1216,25 @@ mod test {
     #[test]
     fn globalrep_error_notenoughdataforglobalreqaddmode() {
         assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqAddMode { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreqlookupkeylen() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqLookupKeyLen { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreqlookupkey() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqLookupKey { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreqremovekeylen() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqRemoveKeyLen { required: 177, given: 177, }));
+    }
+
+    #[test]
+    fn globalrep_error_notenoughdataforglobalreqremovekey() {
+        assert_encode_decode_rep(GlobalRep::Error(ProtoError::NotEnoughDataForGlobalReqRemoveKey { required: 177, given: 177, }));
     }
 }
