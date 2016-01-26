@@ -48,13 +48,16 @@ All numeric values (`uint16_t`, `uint32_t` и `uint64_t`) are encoded using netw
 
 #### Request.
 
-* Request: `Add(key, value)`
-* Description: add new entry both into kv database and tasks queue. Do nothing if there is already an entry with the same key.
+* Request: `Add(key, value, mode)`
+* Description: add new entry both into kv database and tasks queue. Do nothing if there is already an entry with the same key. Queue position is set according to the `mode` parameter:
+ * When `mode` == `Head`, the entry will be inserted at the front of the queue.
+ * When `mode` == `Tail`, the entry will be inserted at the end of the queue.
 * Parameters:
  * `key`: `uint8_t[]` — new entry key
  * `value`: `uint8_t[]` — new entry value
-* Format: <pre>0x02:uint8_t key_length:uint32_t key:uint8_t[] value_length:uint32_t value:uint8_t[]</pre>
-* Valid frame example for `Add("cat", "small")`: <pre>02 00 00 00 03 63 61 74 00 00 00 05 73 6D 61 6C 6C</pre>
+ * `mode`: `uint8_t` — queue position mode: `0x01` for `Head` and `0x02` for `Tail`.
+* Format: <pre>0x02:uint8_t key_length:uint32_t key:uint8_t[] value_length:uint32_t value:uint8_t[] mode:uint8_t</pre>
+* Valid frame example for `Add("cat", "small", Tail)`: <pre>02 00 00 00 03 63 61 74 00 00 00 05 73 6D 61 6C 6C 02</pre>
 
 #### Reply.
 
@@ -133,7 +136,7 @@ or
  * `timeout_ms`: `uint64_t` — timeout in milliseconds. 
  * `mode`: `uint8_t` — empty queue case behaviour: `0x01` for `Block` and `0x02` for `Poll`.
 * Format: <pre>0x04:uint8_t timeout_ms:uint64_t mode:uint8_t</pre>
-* Valid frame example for `Lend(1000)`: <pre>04 00 00 00 00 00 00 03 E8 01</pre>
+* Valid frame example for `Lend(1000, Block)`: <pre>04 00 00 00 00 00 00 03 E8 01</pre>
 
 #### Reply.
 
