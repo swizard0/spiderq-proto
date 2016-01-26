@@ -124,6 +124,31 @@ or
 * Format: <pre>0x0E:uint8_t</pre>
 * Valid frame example for `ValueNotFound()`: <pre>0E</pre>
 
+### Remove / Removed / NotRemoved
+
+#### Request.
+
+* Request: `Remove(key)`
+* Description: remove existing entry from both kv database and queue.
+* Parameters:
+ * `key`: `uint8_t[]` — entry key
+* Format: <pre>0x0C:uint8_t key_length:uint32_t key:uint8_t[]</pre>
+* Valid frame example for `Remove("cat")`: <pre>0C 00 00 00 03 63 61 74</pre>
+
+#### Reply.
+
+* Reply variant: `Removed`
+* Description: the entry was successfully removed.
+* Format: <pre>0x12:uint8_t</pre>
+* Valid frame example for `Removed()`: <pre>12</pre>
+
+or
+
+* Reply variant: `NotRemoved()`
+* Description: the entry was not found in kv database, so it was not removed.
+* Format: <pre>0x13:uint8_t</pre>
+* Valid frame example for `NotRemoved()`: <pre>13</pre>
+
 ### Lend / Lent / QueueEmpty
 
 #### Request.
@@ -229,17 +254,19 @@ or
 * Reply: `StatsGot(count, add, update, lookup, lend, repay, heartbeat, stats)`
 * Description: counters values were received.
 * Parameters:
+ * `ping`: `uint64_t` — count of `Ping` requests after server startup.
  * `count`: `uint64_t` — count of `Count` requests after server startup.
  * `add`: `uint64_t` — count of `Add` requests after server startup.
  * `update`: `uint64_t` — count of `Update` requests after server startup.
  * `lookup`: `uint64_t` — count of `Lookup` requests after server startup.
+ * `remove`: `uint64_t` — count of `Remove` requests after server startup.
  * `lend`: `uint64_t` — count of `Lend` requests after server startup.
  * `repay`: `uint64_t` — count of `Repay` requests after server startup.
  * `heartbeat`: `uint64_t` — count of `Heartbeat` requests after server startup.
  * `stats`: `uint64_t` — count of `Stats` requests after server startup.
 
-* Format: <pre>0x0A:uint8_t count:uint64_t add:uint64_t update:uint64_t lookup:uint64_t lend:uint64_t repay:uint64_t heartbeat:uint64_t stats:uint64_t</pre>
-* Valid frame example for `StatsGot(1, 2, 3, 4, 5, 6, 7, 8)`: <pre>0A 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00 05 00 00 00 00 00 00 00 06 00 00 00 00 00 00 00 07 00 00 00 00 00 00 00 08</pre>
+* Format: <pre>0x0A:uint8_t ping:uint64_t count:uint64_t add:uint64_t update:uint64_t lookup:uint64_t remove:uint64_t lend:uint64_t repay:uint64_t heartbeat:uint64_t stats:uint64_t</pre>
+* Valid frame example for `StatsGot(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)`: <pre>0A 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 02 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00 04 00 00 00 00 00 00 00 05 00 00 00 00 00 00 00 06 00 00 00 00 00 00 00 07 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00 09 00 00 00 00 00 00 00 0A</pre>
 
 ### Flush / Flushed
 
