@@ -1,8 +1,12 @@
-extern crate byteorder;
+use std::{
+    sync::Arc,
+    mem::size_of,
+};
 
-use std::sync::Arc;
-use std::mem::size_of;
-use byteorder::{ByteOrder, BigEndian};
+use byteorder::{
+    ByteOrder,
+    BigEndian,
+};
 
 pub type Key = Arc<Vec<u8>>;
 pub type Value = Arc<Vec<u8>>;
@@ -398,7 +402,7 @@ impl GlobalRep {
                 }, buf))
             },
             (11, buf) => {
-                let (err, buf) = try!(ProtoError::decode(buf));
+                let (err, buf) = ProtoError::decode(buf)?;
                 Ok((GlobalRep::Error(err), buf))
             },
             (12, buf) =>
