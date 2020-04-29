@@ -8,8 +8,8 @@ use byteorder::{
     BigEndian,
 };
 
-pub type Key = Arc<Vec<u8>>;
-pub type Value = Arc<Vec<u8>>;
+pub type Key = Arc<[u8]>;
+pub type Value = Arc<[u8]>;
 
 #[derive(Debug, PartialEq)]
 pub enum RepayStatus {
@@ -183,7 +183,7 @@ macro_rules! try_get_vec {
         if buf.len() < len {
             return Err(ProtoError::$err_val { required: len, given: buf.len(), })
         } else {
-            (Arc::new(buf[0 .. len].to_owned()), &buf[len ..])
+            (Arc::from(&buf[0 .. len]), &buf[len ..])
         }
     })
 }
