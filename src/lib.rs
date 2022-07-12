@@ -143,6 +143,14 @@ pub enum ProtoError {
     NotEnoughDataForGlobalReqRemoveKey { required: usize, given: usize, },
 }
 
+impl std::fmt::Display for ProtoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for ProtoError {}
+
 macro_rules! try_get {
     ($data:ident, $ty:ty, $reader:ident, $err:ident) =>
         (if $data.len() < size_of::<$ty>() {
